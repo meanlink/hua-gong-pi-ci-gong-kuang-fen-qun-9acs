@@ -3,8 +3,18 @@
 KMeans 聚类的真实业务分析小型项目。完整模拟客户、痛点、上下游、算法公式与一天工作剧本见 [BUSINESS.md](BUSINESS.md)。
 
 ## 模块与业务流程
-数据接入（JSON/CSV、字段验证、批次指纹）→ 参数化分析（异步 Python worker）→ 结果复核（指标、图形、明细、解释、批准）→ 定时分发（本地收件箱、CSV/JSON、SHA256）；另有业务总览和审计轨迹。
-三个贯穿全栈的实体：Dataset 数据批次、Job 分析任务、Report 分发计划；辅助 User、Audit、Delivery。
+数据接入（JSON/CSV、字段验证、批次指纹）→ 参数化分析（异步 Python worker）→ 结果复核（指标、图形、明细、解释、批准）→ 小试排程（从获批分析固定工况、整单排入实验釜）→ 定时分发（本地收件箱、CSV/JSON、SHA256）；另有业务总览和审计轨迹。
+三个贯穿全栈的实体：Dataset 数据批次、Job 分析任务、Report 分发计划；小试排程由 PilotTrial 小试单、PilotSlot 排程段、MaintenanceWindow 检修封锁与 TrialEvent 变更历史支撑；辅助 Reactor 实验釜、User、Audit、Delivery。
+
+## 小试单与实验釜排程
+- 从“已完成且获批”的分析结果里选一个工况族群创建小试单；创建时把该族群中心（温度、釜压、停留时间、收率）连同来源分析、数据集指纹一起快照，之后分析结果变化不影响已建单。
+- 小试单状态：draft → confirmed → started，draft/confirmed 可 cancelled。创建与草稿排程不占釜；**确认时整单所有段都有空位才占用**，任一段冲突则整单不占用。
+- 负责人整单排程：一段 = 一个实验釜 + 起止时间；反应结束后的清洗时长（按釜配置 45/60/90 分钟）仍计入占用，下一段从清洗结束时刻开始即可衔接。
+- 检修封锁只能建在无既有占用的时段；已确认/已开试的占用也不能被检修覆盖。
+- 已确认单改期按整单原子替换：任一段冲突则整单失败、原占用与清洗时段完整保留，并在变更历史留 `reschedule.rejected`。
+- 开试后冻结工况与排程（`frozen_conditions` / `frozen_schedule`）；开试后不能改期或取消。取消只释放尚未开试的占用。
+- 确认、改期、开试、取消、检修写入都由 `schedule_guards` 单行写锁串行化（MySQL 行锁 / SQLite 写锁），并在锁内重新查冲突；状态迁移幂等，请求中断回滚后重试不会重复占用。
+- 页面 `#/trials` 提供创建、整单排程与预检、改期、开试、取消、冲突来源明细、实验釜占用看板、检修封锁和变更历史。
 
 ## 快速启动
 ```bash
@@ -18,8 +28,8 @@ docker compose exec -T backend python -m scripts.seed_demo
 ## 演示账号与权限
 |账号|密码|真实权限|
 |---|---|---|
-|admin@demo.local|Demo123!|接入、执行、批准、分发、暂停、读取与下载|
-|analyst@demo.local|Demo123!|接入、执行、读取与下载；不能批准或安排分发|
+|admin@demo.local|Demo123!|接入、执行、批准、排程、开试、取消、检修封锁、分发、暂停、读取与下载|
+|analyst@demo.local|Demo123!|接入、执行、创建小试单、读取与下载；不能批准、排程或安排分发|
 |viewer@demo.local|Demo123!|只读与下载|
 
 ## 技术与本地开发
@@ -29,7 +39,7 @@ Python 3.12 / FastAPI / SQLAlchemy / NumPy / SciPy / scikit-learn；MySQL 8.0；
 ## 目录与工程约定
 backend/src/{models,schemas,services,routes,controllers,middlewares,constants,config,utils}；backend/scripts/seed_demo.py；backend/migrations/initial.py。
 frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}。
-Role 枚举：admin/analyst/viewer；JobStatus：queued/running/completed/failed。后端 backend/src/constants/enums.py，前端 frontend/src/constants/enums.js；路由权限在 middlewares/auth.py；页面按相同角色控制操作入口。
+Role 枚举：admin/analyst/viewer；JobStatus：queued/running/completed/failed；TrialStatus：draft/confirmed/started/cancelled。后端 backend/src/constants/enums.py，前端 frontend/src/constants/enums.js；路由权限在 middlewares/auth.py；页面按相同角色控制操作入口。
 
 ## 环境变量与 Docker
 COMPOSE_PROJECT_NAME=batch-clusters；FRONTEND_PORT=18209；BACKEND_PORT=19209；DB_PORT=17709；DB_PASSWORD、JWT_SECRET 见 .env.example；SEED_DEMO 默认 true。共享命名产物卷供后端下载与 worker 写入，数据库/Redis 各持久卷。

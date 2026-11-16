@@ -7,8 +7,9 @@ from redis import Redis
 from src.config.database import Session
 from src.config.settings import REDIS_URL
 from src.middlewares.requests import RequestControl
-from src.routes import auth, datasets, jobs, reports
+from src.routes import auth, datasets, jobs, reports, trials
 from src.controllers import catalog
+from src.services.trials import ScheduleConflict
 from migrations.initial import migrate
 @asynccontextmanager
 async def lifespan(app):
@@ -21,6 +22,9 @@ async def lifespan(app):
     yield
 app=FastAPI(title='业务分析工作室',lifespan=lifespan)
 app.add_middleware(RequestControl)
+@app.exception_handler(ScheduleConflict)
+async def schedule_conflict(request:Request,exc:ScheduleConflict):
+    return JSONResponse({'detail':exc.message,'conflicts':exc.conflicts},status_code=exc.status_code)
 @app.exception_handler(Exception)
 async def unhandled(request:Request,exc:Exception):
     logging.exception('Request failed')
@@ -30,4 +34,4 @@ def health():
     with Session() as db:db.execute(text('SELECT 1'))
     r=Redis.from_url(REDIS_URL,socket_timeout=2);r.ping();r.close()
     return {'status':'healthy'}
-for router in [auth.router,datasets.router,jobs.router,reports.router,catalog.router]:app.include_router(router)
+for router in [auth.router,datasets.router,jobs.router,reports.router,trials.router,catalog.router]:app.include_router(router)
